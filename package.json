@@ -1,0 +1,32 @@
+{
+  "name": "ai-simplenodeapp",
+  "version": "1.0.0",
+  "description": "Twilio AI Voice Assistant with Azure Speech and OpenAI",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "twilio",
+    "ai",
+    "voice",
+    "assistant",
+    "azure",
+    "openai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@fastify/websocket": "^10.0.0",
+    "alawmulaw": "^4.0.0",
+    "dotenv": "^17.2.3",
+    "fastify": "^4.25.0",
+    "microsoft-cognitiveservices-speech-sdk": "^1.34.0",
+    "openai": "^4.20.0",
+    "pino-pretty": "^10.3.0",
+    "twilio": "^4.20.0"
+  }
+}
