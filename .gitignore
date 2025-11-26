@@ -16,7 +16,9 @@ build/
 .out/
 .next/
 .vite/
-
+.venv/
+venv/
+env/
 # --- Environment Files ---
 .env
 .env.*
