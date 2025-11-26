@@ -1,0 +1,60 @@
+# --- Node Modules ---
+node_modules
+
+# --- Logs ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+logs/
+*.log
+
+# --- Build Outputs ---
+dist/
+build/
+.out/
+.next/
+.vite/
+
+# --- Environment Files ---
+.env
+.env.*
+!.env.example
+
+# --- Cache ---
+.cache/
+.parcel-cache/
+.vscode/
+.eslintcache
+.typecheck/
+
+# --- Coverage ---
+coverage/
+
+# --- Temporary Files ---
+*.tmp
+*.temp
+
+# --- System Files ---
+.DS_Store
+Thumbs.db
+
+# --- Production Bundles (If root contains them) ---
+*.tar.gz
+
+# --- Editor-specific ---
+.idea/
+*.swp
+
+# --- React Specific ---
+/public/static/
+/public/build/
+/public/assets/
+
+# --- Node Backend ---
+/uploads/
+/storage/
+
+backend-node/.env
+.npmrc
