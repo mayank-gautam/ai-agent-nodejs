@@ -61,25 +61,24 @@ function connectSmartTurn() {
     try {
       const data = JSON.parse(msg.toString("utf8"));
 
-      if (data.type === "turn_complete" && data.probability > 0.5) {
-        if (lastFinalTranscript.trim()) {
-          console.log("🟢 SmartTurn Complete");
-          console.log("User said:", lastFinalTranscript);
-          console.log("Probability:", data.probability.toFixed(3));
+      // 🔥 UPDATED: Using completed only (no probability)
+      console.log("Data", data)
+      if (data.type === "turn_complete") {
+        if (data.completed === 1) {
+          console.log("🟢 SmartTurn: USER FINISHED SPEAKING");
+          console.log("User said:", lastFinalTranscript || "(no transcript)");
           console.log("--------------------------------------");
-        } else {
-          console.log("🟢 SmartTurn complete (no transcript yet)");
-          console.log("Probability:", data.probability.toFixed(3));
-          console.log("--------------------------------------");
-        }
 
-        if (frontendConn) {
-          frontendConn.send(
-            JSON.stringify({
-              type: "turn_complete",
-              probability: data.probability,
-            })
-          );
+          if (frontendConn) {
+            frontendConn.send(
+              JSON.stringify({
+                type: "turn_complete",
+                completed: 1,
+              })
+            );
+          }
+        } else {
+          console.log("🟡 SmartTurn: user still speaking...");
         }
       }
     } catch (err) {
@@ -108,7 +107,7 @@ function createStreamingRecognizer() {
 
       console.log("Final:", e.result.text);
 
-      // Auto-process LLM without waiting for SmartTurn
+      // Auto-process LLM as before
       if (!isProcessingLLM && lastFinalTranscript.trim()) {
         isProcessingLLM = true;
         sendToFrontend({ type: "turn_state", state: "processing" });

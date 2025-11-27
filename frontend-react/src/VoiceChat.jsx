@@ -32,8 +32,6 @@ const VoiceChat = () => {
     ws.onclose = () => {
       setConnected(false);
       setLog((p) => [...p, "🔴 Disconnected from backend"]);
-
-      // Retry connection after 1 sec
       reconnectTimerRef.current = setTimeout(connectWS, 1000);
     };
 
@@ -63,11 +61,13 @@ const VoiceChat = () => {
             setLog((p) => [...p, `🤖 LLM: ${msg.text}`]);
             break;
 
+          // 🔥 UPDATED: NO PROBABILITY
           case "turn_complete":
-            setLog((p) => [
-              ...p,
-              `🔊 Speech complete (p=${msg.probability.toFixed(2)})`,
-            ]);
+            if (msg.completed === 1) {
+              setLog((p) => [...p, `🔊 Speech complete (endpoint detected)`]);
+            } else {
+              setLog((p) => [...p, `🟡 User still speaking`]);
+            }
             break;
 
           case "error":

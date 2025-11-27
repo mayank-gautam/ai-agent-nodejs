@@ -154,11 +154,15 @@ async def handle_client(ws):
             if isinstance(message, (bytes, bytearray)):
                 result = detector.process_audio(message)
                 if result:
-                    prob = float(result.get("probability", 0.0))
+
+                    # SmartTurn returns: prediction = 1 (endpoint), 0 (not endpoint)
+                    prediction = int(result.get("prediction", 0))
+                    print("prediction: ",prediction)
                     await ws.send(json.dumps({
                         "type": "turn_complete",
-                        "probability": prob
+                        "completed": 1 if prediction == 1 else 0
                     }))
+
             else:
                 continue
 
