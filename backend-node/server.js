@@ -19,10 +19,8 @@ const SMARTTURN_URL = "ws://localhost:9001";
 
 let smartTurnWS = null;
 let frontendConn = null;
-
 let sttPushStream = null;
 let sttRecognizer = null;
-
 let lastFinalTranscript = "";
 let isProcessingLLM = false;
 
@@ -36,53 +34,41 @@ async function getLLMResponse(text) {
       ],
     });
     return completion.choices?.[0]?.message?.content?.trim() || null;
-  } catch (err) {
-    console.error("LLM:", err.message);
+  } catch {
     return null;
   }
 }
 
 function connectSmartTurn() {
   if (smartTurnWS) {
-    try {
-      smartTurnWS.close();
-    } catch {}
+    try { smartTurnWS.close(); } catch {}
   }
 
   smartTurnWS = new WebSocket(SMARTTURN_URL);
 
-  smartTurnWS.on("close", () => {
-    setTimeout(connectSmartTurn, 1000);
-  });
-
-  smartTurnWS.on("error", (e) => console.error("SmartTurn:", e.message));
+  smartTurnWS.on("error", () => {});
 
   smartTurnWS.on("message", async (msg) => {
-    try {
-      const data = JSON.parse(msg.toString("utf8"));
+    const data = JSON.parse(msg.toString("utf8"));
 
-      // 🔥 UPDATED: Using completed only (no probability)
-      console.log("Data", data)
-      if (data.type === "turn_complete") {
-        if (data.completed === 1) {
-          console.log("🟢 SmartTurn: USER FINISHED SPEAKING");
-          console.log("User said:", lastFinalTranscript || "(no transcript)");
-          console.log("--------------------------------------");
-
-          if (frontendConn) {
-            frontendConn.send(
-              JSON.stringify({
-                type: "turn_complete",
-                completed: 1,
-              })
-            );
-          }
-        } else {
-          console.log("🟡 SmartTurn: user still speaking...");
-        }
+    if (data.type === "turn_complete") {
+      if (data.completed === 1) {
+        console.log("USER:", lastFinalTranscript);
+      } else {
+        console.log("0");
       }
-    } catch (err) {
-      console.error("SmartTurn msg:", err.message);
+
+      frontendConn?.send(JSON.stringify({
+        type: "turn_complete",
+        completed: data.completed
+      }));
+
+      if (data.completed === 1 && lastFinalTranscript.trim()) {
+        sendToFrontend({
+          type: "stt_final",
+          text: lastFinalTranscript
+        });
+      }
     }
   });
 }
@@ -105,22 +91,13 @@ function createStreamingRecognizer() {
       lastFinalTranscript = e.result.text;
       sendToFrontend({ type: "stt_final", text: e.result.text });
 
-      console.log("Final:", e.result.text);
-
-      // Auto-process LLM as before
       if (!isProcessingLLM && lastFinalTranscript.trim()) {
         isProcessingLLM = true;
         sendToFrontend({ type: "turn_state", state: "processing" });
 
         const reply = await getLLMResponse(lastFinalTranscript);
-
         if (reply) {
           sendToFrontend({ type: "llm_response", text: reply });
-        } else {
-          sendToFrontend({
-            type: "error",
-            message: "Failed to generate response.",
-          });
         }
 
         isProcessingLLM = false;
@@ -129,13 +106,9 @@ function createStreamingRecognizer() {
     }
   };
 
-  sttRecognizer.canceled = (_, e) =>
-    console.error("STT canceled:", e.errorDetails || e.reason);
+  sttRecognizer.canceled = () => {};
 
-  sttRecognizer.startContinuousRecognitionAsync(
-    () => {},
-    (err) => console.error("STT:", err)
-  );
+  sttRecognizer.startContinuousRecognitionAsync(() => {}, () => {});
 }
 
 function stopStreamingRecognizer() {
@@ -153,9 +126,7 @@ function stopStreamingRecognizer() {
   }
 
   if (sttPushStream) {
-    try {
-      sttPushStream.close();
-    } catch {}
+    try { sttPushStream.close(); } catch {}
     sttPushStream = null;
   }
 }
@@ -190,26 +161,27 @@ wss.on("connection", (ws) => {
 
     if (sttPushStream) sttPushStream.write(msg);
 
-    if (smartTurnWS?.readyState === WebSocket.OPEN) smartTurnWS.send(msg);
+    if (smartTurnWS?.readyState === WebSocket.OPEN) {
+      if (msg.length >= 320) smartTurnWS.send(msg);
+    }
   });
 
   ws.on("close", () => {
     if (frontendConn === ws) frontendConn = null;
-
     setTimeout(() => {
       if (!frontendConn) stopStreamingRecognizer();
     }, 5000);
   });
 
-  ws.on("error", (e) => console.error("Frontend WS:", e.message));
+  ws.on("error", () => {});
 });
 
-server.listen(PORT, () => connectSmartTurn());
+server.listen(PORT, () => {
+  connectSmartTurn();
+});
 
 process.on("SIGINT", () => {
-  try {
-    smartTurnWS?.close();
-  } catch {}
+  try { smartTurnWS?.close(); } catch {}
   wss.close();
   stopStreamingRecognizer();
   server.close(() => process.exit(0));

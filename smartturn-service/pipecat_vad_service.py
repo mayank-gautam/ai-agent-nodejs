@@ -9,32 +9,24 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 
 SAMPLE_RATE = 16000
-
-SILENCE_MS = 300
-ENERGY_THRESHOLD = 150
-MIN_SPEECH_MS = 300
-
-SILERO_THRESHOLD = 0.5
-MIN_SILERO_SAMPLES = SAMPLE_RATE // 10
-
-MAX_TURN_MS = 3500
-MAX_AUDIO_BYTES = int(SAMPLE_RATE * 2 * (MAX_TURN_MS / 1000.0))
+ENERGY_THRESHOLD = 120
+SILENCE_MS = 80
+MIN_SPEECH_MS = 200
+SILERO_THRESHOLD = 0.25
+MAX_TURN_MS = 2500
+MAX_AUDIO_BYTES = int(SAMPLE_RATE * 2 * (MAX_TURN_MS / 1000))
 
 
 class SmartTurnDetector:
     def __init__(self):
-        try:
-            self.model = LocalSmartTurnAnalyzerV3(
-                params=SmartTurnParams(
-                    stop_secs=3.0,
-                    pre_speech_ms=0,
-                    max_duration_secs=8.0,
-                ),
-                cpu_count=1,
-            )
-        except Exception as e:
-            print("Model load error:", e)
-            raise
+        self.model = LocalSmartTurnAnalyzerV3(
+            params=SmartTurnParams(
+                stop_secs=2.0,
+                pre_speech_ms=0,
+                max_duration_secs=5.0,
+            ),
+            cpu_count=1,
+        )
 
         try:
             torch.set_num_threads(1)
@@ -45,7 +37,7 @@ class SmartTurnDetector:
                 onnx=False,
             )
             self.silero_model.eval()
-        except Exception:
+        except:
             self.silero_model = None
 
         self.reset()
@@ -53,72 +45,61 @@ class SmartTurnDetector:
     def reset(self):
         self.audio_buffer = bytearray()
         self.is_speaking = False
-        self.last_speech_ms = None
         self.speech_start_ms = None
+        self.last_speech_ms = None
 
-    @staticmethod
-    def rms(pcm: bytes) -> float:
-        if not pcm:
-            return 0.0
+    def rms(self, pcm):
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-        return float(np.sqrt(np.mean(arr * arr))) if arr.size else 0.0
+        return float(np.sqrt(np.mean(arr * arr))) if arr.size else 0
 
-    def silero_prob(self, pcm_data: bytes) -> float:
-        if not self.silero_model or not pcm_data:
+    def silero_prob(self, pcm):
+        if not self.silero_model or not pcm:
             return 1.0
-        try:
-            audio_np = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-            if len(audio_np) < 512:
-                return 0.0
+
+        audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+        if len(audio) < 512:
+            return 1.0
+
+        with torch.no_grad():
             probs = []
-            with torch.no_grad():
-                for i in range(0, len(audio_np) - 512 + 1, 512):
-                    chunk = audio_np[i:i + 512]
-                    tensor = torch.from_numpy(chunk).unsqueeze(0).float()
-                    probs.append(self.silero_model(tensor, SAMPLE_RATE).item())
-            return float(np.mean(probs)) if probs else 0.0
-        except Exception:
-            return 1.0
+            for i in range(0, len(audio) - 512 + 1, 512):
+                chunk = audio[i:i + 512]
+                t = torch.from_numpy(chunk).unsqueeze(0)
+                probs.append(self.silero_model(t, SAMPLE_RATE).item())
+
+        return float(np.mean(probs)) if probs else 1.0
 
     def finalize(self):
-        if not self.is_speaking or not self.last_speech_ms or not self.speech_start_ms:
+        if not self.is_speaking or not self.speech_start_ms or not self.last_speech_ms:
             self.reset()
             return None
 
         duration = self.last_speech_ms - self.speech_start_ms
-        if duration < MIN_SPEECH_MS or not self.audio_buffer:
+        if duration < MIN_SPEECH_MS:
             self.reset()
             return None
 
-        pcm_bytes = bytes(self.audio_buffer)
-        if len(pcm_bytes) >= MIN_SILERO_SAMPLES * 2:
-            prob = self.silero_prob(pcm_bytes)
-        else:
-            prob = 1.0
+        pcm = bytes(self.audio_buffer)
 
-        if prob < SILERO_THRESHOLD:
+        if self.silero_prob(pcm) < SILERO_THRESHOLD:
             self.reset()
             return None
 
-        audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
 
         try:
-            if hasattr(self.model, "predict_endpoint"):
-                result = self.model.predict_endpoint(audio)
-            else:
-                result = self.model._predict_endpoint(audio)
-        except Exception:
-            self.reset()
-            return None
+            result = self.model.predict_endpoint(audio)
+        except:
+            result = self.model._predict_endpoint(audio)
 
         self.reset()
         return result
 
-    def process_audio(self, chunk: bytes):
-        if not chunk or len(chunk) % 2 != 0:
+    def process(self, chunk):
+        if not chunk or len(chunk) % 2:
             return None
 
-        now = time.time() * 1000.0
+        now = time.time() * 1000
         energy = self.rms(chunk)
 
         if energy > ENERGY_THRESHOLD:
@@ -139,7 +120,7 @@ class SmartTurnDetector:
             silence = now - self.last_speech_ms
             duration = self.last_speech_ms - self.speech_start_ms
 
-            if duration >= MAX_TURN_MS or silence >= SILENCE_MS:
+            if silence > SILENCE_MS or duration > MAX_TURN_MS:
                 return self.finalize()
 
         return None
@@ -150,24 +131,35 @@ async def handle_client(ws):
     print("Client connected:", ws.remote_address)
 
     try:
-        async for message in ws:
-            if isinstance(message, (bytes, bytearray)):
-                result = detector.process_audio(message)
-                if result:
+        try:
+            async for chunk in ws:
+                if isinstance(chunk, (bytes, bytearray)):
+                    res = detector.process(chunk)
 
-                    # SmartTurn returns: prediction = 1 (endpoint), 0 (not endpoint)
-                    prediction = int(result.get("prediction", 0))
-                    print("prediction: ",prediction)
-                    await ws.send(json.dumps({
-                        "type": "turn_complete",
-                        "completed": 1 if prediction == 1 else 0
-                    }))
+                    if res:
+                        pred = res.get("prediction")
+                        if isinstance(pred, dict):
+                            pred = pred.get("value", 0)
 
-            else:
-                continue
+                        completed = int(
+                            bool(pred)
+                            or bool(res.get("is_endpoint"))
+                            or bool(res.get("endpoint"))
+                        )
 
-    except Exception as e:
-        print("Client error:", e)
+                        await ws.send(json.dumps({
+                            "type": "turn_complete",
+                            "completed": completed
+                        }))
+                        
+                        print("completed: ",completed)
+
+        except websockets.exceptions.ConnectionClosedError:
+            pass
+        except websockets.exceptions.ConnectionClosedOK:
+            pass
+        except Exception:
+            pass
 
     finally:
         print("Client disconnected:", ws.remote_address)
@@ -175,11 +167,12 @@ async def handle_client(ws):
 
 async def main():
     async with websockets.serve(handle_client, "0.0.0.0", 9001):
-        await asyncio.Future()
+        print("SmartTurn running at ws://localhost:9001")
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            print("SmartTurn server shutting down cleanly.")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
