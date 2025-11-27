@@ -12,6 +12,7 @@ const VoiceChat = () => {
   const [response, setResponse] = useState('');
   const [log, setLog] = useState([]);
 
+  // ---------------- WebSocket setup ----------------
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:8080');
     ws.binaryType = 'arraybuffer';
@@ -49,19 +50,15 @@ const VoiceChat = () => {
           setLog((prev) => [...prev, `❌ Error: ${msg.message}`]);
         }
       } catch (e) {
-        console.error(e);
+        console.error('WS message parse error:', e);
       }
     };
 
     wsRef.current = ws;
-
     return () => ws.close();
   }, []);
 
-  // ---------------------------------------------------
-  // START / STOP RECORDING
-  // ---------------------------------------------------
-
+  // ---------------- Start recording ----------------
   const startRecording = async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       alert("WebSocket not connected yet!");
@@ -78,14 +75,15 @@ const VoiceChat = () => {
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const processor = audioContext.createScriptProcessor(2048, 1, 1);
 
       processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        const pcm16 = floatToPCM16(resampleTo16k(input, audioContext.sampleRate));
+        const float32 = e.inputBuffer.getChannelData(0);
+        const resampled = resampleTo16k(float32, audioContext.sampleRate);
+        const pcm16 = floatToPCM16(resampled);
 
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(pcm16);
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(new Uint8Array(pcm16.buffer));
         }
       };
 
@@ -97,79 +95,77 @@ const VoiceChat = () => {
       setRecording(true);
       setTranscript('');
       setResponse('');
-      setLog(prev => [...prev, "🎙 Listening…"]);
+      setLog((prev) => [...prev, '🎙 Listening…']);
     } catch (err) {
       console.error(err);
-      setLog(prev => [...prev, "❌ Could not access microphone"]);
+      setLog((prev) => [...prev, '❌ Could not access microphone']);
     }
   };
 
+  // ---------------- Stop recording ----------------
   const stopRecording = () => {
     setRecording(false);
-    setLog(prev => [...prev, "⏹ Stopped"]);
+    setLog((prev) => [...prev, '⏹ Stopped']);
 
     if (processorRef.current) processorRef.current.disconnect();
     if (audioContextRef.current) audioContextRef.current.close();
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+    }
 
     processorRef.current = null;
     audioContextRef.current = null;
     streamRef.current = null;
 
-    // optional reset signal
-    if (wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "reset" }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'reset' }));
     }
   };
 
-  // ---------------------------------------------------
-  // AUDIO HELPERS
-  // ---------------------------------------------------
+  // ---------------- Audio helpers ----------------
+  function resampleTo16k(float32Audio, sourceRate) {
+    if (sourceRate === 16000) return float32Audio;
 
-  function resampleTo16k(input, inputSR) {
-    const targetSR = 16000;
-    const ratio = inputSR / targetSR;
-    const newLength = Math.round(input.length / ratio);
+    const targetRate = 16000;
+    const ratio = sourceRate / targetRate;
+    const newLength = Math.floor(float32Audio.length / ratio);
     const result = new Float32Array(newLength);
 
-    let offset = 0;
     for (let i = 0; i < newLength; i++) {
-      result[i] = input[Math.floor(offset)];
-      offset += ratio;
+      const idx = i * ratio;
+      const left = Math.floor(idx);
+      const right = Math.min(left + 1, float32Audio.length - 1);
+      const frac = idx - left;
+
+      result[i] =
+        float32Audio[left] * (1 - frac) + float32Audio[right] * frac;
     }
+
     return result;
   }
 
   function floatToPCM16(float32) {
-    const buffer = new ArrayBuffer(float32.length * 2);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    for (let i = 0; i < float32.length; i++, offset += 2) {
+    const pcm = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
       let s = Math.max(-1, Math.min(1, float32[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
-
-    return buffer;
+    return pcm;
   }
 
-  // ---------------------------------------------------
-  // UI
-  // ---------------------------------------------------
-
+  // ---------------- UI ----------------
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
       <div className="w-full max-w-2xl bg-white/10 backdrop-blur-xl rounded-2xl p-8 shadow-lg border border-white/10">
-        
         <h1 className="text-3xl font-bold mb-6 text-center text-white">
           🎧 AI Voice Assistant
         </h1>
 
         <p className="text-center mb-4 text-slate-300">
-          WebSocket: {connected ? "🟢 Connected" : "🔴 Not connected"}
+          WebSocket: {connected ? '🟢 Connected' : '🔴 Not connected'}
         </p>
 
-        {/* Microphone Button */}
+        {/* Mic button */}
         <div className="flex justify-center mb-6">
           {!recording ? (
             <button
@@ -189,7 +185,7 @@ const VoiceChat = () => {
           )}
         </div>
 
-        {/* Transcript Section */}
+        {/* Transcript */}
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-white mb-2">🗣 Transcript</h2>
           <div className="bg-white/10 border border-white/10 rounded-xl p-4 min-h-[70px] text-slate-200">
@@ -214,7 +210,6 @@ const VoiceChat = () => {
             ))}
           </div>
         </div>
-
       </div>
     </div>
   );
