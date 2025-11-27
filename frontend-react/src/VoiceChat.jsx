@@ -1,67 +1,104 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from "react";
 
 const VoiceChat = () => {
   const wsRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+
   const audioContextRef = useRef(null);
   const processorRef = useRef(null);
   const streamRef = useRef(null);
 
   const [connected, setConnected] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [response, setResponse] = useState('');
+  const [partialTranscript, setPartialTranscript] = useState("");
+  const [finalTranscript, setFinalTranscript] = useState("");
+  const [response, setResponse] = useState("");
   const [log, setLog] = useState([]);
 
-  // ---------------- WebSocket setup ----------------
-  useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8080');
-    ws.binaryType = 'arraybuffer';
+  // -----------------------------------------------------------
+  // WebSocket AUTO-CONNECT + SAFE RECONNECT
+  // -----------------------------------------------------------
+  const connectWS = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+
+    const ws = new WebSocket("ws://localhost:8080");
+    ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
       setConnected(true);
-      setLog((prev) => [...prev, '🟢 Connected to backend']);
+      setLog((p) => [...p, "🟢 Connected to backend"]);
     };
 
     ws.onclose = () => {
       setConnected(false);
-      setLog((prev) => [...prev, '🔴 Disconnected']);
+      setLog((p) => [...p, "🔴 Disconnected from backend"]);
+
+      // Retry connection after 1 sec
+      reconnectTimerRef.current = setTimeout(connectWS, 1000);
     };
 
     ws.onerror = (err) => {
-      console.error('WebSocket error:', err);
-      setLog((prev) => [...prev, '⚠️ WebSocket error']);
+      setLog((p) => [...p, "⚠️ WebSocket error"]);
+      console.error("WS error:", err);
+      ws.close();
     };
 
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
 
-        if (msg.type === 'transcript') {
-          setTranscript(msg.text);
-          setLog((prev) => [...prev, `🗣 Transcript: ${msg.text}`]);
-        }
+        switch (msg.type) {
+          case "stt_partial":
+            setPartialTranscript(msg.text);
+            setLog((p) => [...p, `📝 Partial: ${msg.text}`]);
+            break;
 
-        if (msg.type === 'llm_response') {
-          setResponse(msg.text);
-          setLog((prev) => [...prev, `🤖 LLM: ${msg.text}`]);
-        }
+          case "stt_final":
+            setFinalTranscript(msg.text);
+            setLog((p) => [...p, `🗣 Final: ${msg.text}`]);
+            break;
 
-        if (msg.type === 'error') {
-          setLog((prev) => [...prev, `❌ Error: ${msg.message}`]);
+          case "llm_response":
+            setResponse(msg.text);
+            setLog((p) => [...p, `🤖 LLM: ${msg.text}`]);
+            break;
+
+          case "turn_complete":
+            setLog((p) => [
+              ...p,
+              `🔊 Speech complete (p=${msg.probability.toFixed(2)})`,
+            ]);
+            break;
+
+          case "error":
+            setLog((p) => [...p, `❌ Error: ${msg.message}`]);
+            break;
+
+          default:
+            break;
         }
       } catch (e) {
-        console.error('WS message parse error:', e);
+        console.error("Failed parsing WS message:", e);
       }
     };
 
     wsRef.current = ws;
-    return () => ws.close();
+  };
+
+  useEffect(() => {
+    connectWS();
+    return () => {
+      clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+    };
   }, []);
 
-  // ---------------- Start recording ----------------
+  // -----------------------------------------------------------
+  // START RECORDING
+  // -----------------------------------------------------------
   const startRecording = async () => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      alert("WebSocket not connected yet!");
+    if (!connected) {
+      alert("Not connected to backend!");
       return;
     }
 
@@ -69,9 +106,7 @@ const VoiceChat = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: 48000,
-      });
+      const audioContext = new AudioContext({ sampleRate: 48000 });
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
@@ -82,33 +117,36 @@ const VoiceChat = () => {
         const resampled = resampleTo16k(float32, audioContext.sampleRate);
         const pcm16 = floatToPCM16(resampled);
 
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(new Uint8Array(pcm16.buffer));
         }
       };
 
       source.connect(processor);
       processor.connect(audioContext.destination);
-
       processorRef.current = processor;
 
       setRecording(true);
-      setTranscript('');
-      setResponse('');
-      setLog((prev) => [...prev, '🎙 Listening…']);
+      setPartialTranscript("");
+      setFinalTranscript("");
+      setResponse("");
+      setLog((p) => [...p, "🎙 Listening…"]);
     } catch (err) {
       console.error(err);
-      setLog((prev) => [...prev, '❌ Could not access microphone']);
+      setLog((p) => [...p, "❌ Could not access microphone"]);
     }
   };
 
-  // ---------------- Stop recording ----------------
+  // -----------------------------------------------------------
+  // STOP RECORDING
+  // -----------------------------------------------------------
   const stopRecording = () => {
     setRecording(false);
-    setLog((prev) => [...prev, '⏹ Stopped']);
+    setLog((p) => [...p, "⏹ Stopped"]);
 
-    if (processorRef.current) processorRef.current.disconnect();
-    if (audioContextRef.current) audioContextRef.current.close();
+    processorRef.current?.disconnect();
+    audioContextRef.current?.close();
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
     }
@@ -117,16 +155,16 @@ const VoiceChat = () => {
     audioContextRef.current = null;
     streamRef.current = null;
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'reset' }));
-    }
+    wsRef.current?.send(JSON.stringify({ type: "reset" }));
   };
 
-  // ---------------- Audio helpers ----------------
+  // -----------------------------------------------------------
+  // Helpers
+  // -----------------------------------------------------------
   function resampleTo16k(float32Audio, sourceRate) {
-    if (sourceRate === 16000) return float32Audio;
-
     const targetRate = 16000;
+    if (sourceRate === targetRate) return float32Audio;
+
     const ratio = sourceRate / targetRate;
     const newLength = Math.floor(float32Audio.length / ratio);
     const result = new Float32Array(newLength);
@@ -136,24 +174,23 @@ const VoiceChat = () => {
       const left = Math.floor(idx);
       const right = Math.min(left + 1, float32Audio.length - 1);
       const frac = idx - left;
-
-      result[i] =
-        float32Audio[left] * (1 - frac) + float32Audio[right] * frac;
+      result[i] = float32Audio[left] * (1 - frac) + float32Audio[right] * frac;
     }
-
     return result;
   }
 
   function floatToPCM16(float32) {
     const pcm = new Int16Array(float32.length);
     for (let i = 0; i < float32.length; i++) {
-      let s = Math.max(-1, Math.min(1, float32[i]));
+      const s = Math.max(-1, Math.min(1, float32[i]));
       pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
     return pcm;
   }
 
-  // ---------------- UI ----------------
+  // -----------------------------------------------------------
+  // UI
+  // -----------------------------------------------------------
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
       <div className="w-full max-w-2xl bg-white/10 backdrop-blur-xl rounded-2xl p-8 shadow-lg border border-white/10">
@@ -162,10 +199,10 @@ const VoiceChat = () => {
         </h1>
 
         <p className="text-center mb-4 text-slate-300">
-          WebSocket: {connected ? '🟢 Connected' : '🔴 Not connected'}
+          WebSocket: {connected ? "🟢 Connected" : "🔴 Not connected"}
         </p>
 
-        {/* Mic button */}
+        {/* Mic Button */}
         <div className="flex justify-center mb-6">
           {!recording ? (
             <button
@@ -189,7 +226,9 @@ const VoiceChat = () => {
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-white mb-2">🗣 Transcript</h2>
           <div className="bg-white/10 border border-white/10 rounded-xl p-4 min-h-[70px] text-slate-200">
-            {transcript || <span className="text-slate-500">Say something…</span>}
+            {finalTranscript || partialTranscript || (
+              <span className="text-slate-500">Say something…</span>
+            )}
           </div>
         </div>
 
@@ -197,7 +236,7 @@ const VoiceChat = () => {
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-white mb-2">🤖 Assistant Reply</h2>
           <div className="bg-white/10 border border-white/10 rounded-xl p-4 min-h-[70px] text-slate-200">
-            {response || <span className="text-slate-500">Waiting for response…</span>}
+            {response || <span className="text-slate-500">Waiting…</span>}
           </div>
         </div>
 
